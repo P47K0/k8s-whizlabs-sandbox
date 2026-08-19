@@ -171,6 +171,26 @@ install_node() {
   log "[$host] Installation completed"
 }
 
+download_calico_manifests() {
+  CALICO_BASE_URL="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests"
+
+  curl --fail --silent --show-error --location \
+    --retry 3 \
+    --retry-delay 2 \
+    --connect-timeout 10 \
+    --max-time 120 \
+    "${CALICO_BASE_URL}/operator-crds.yaml" \
+    --output "$CALICO_CACHE_DIR/operator-crds.yaml"
+
+  curl --fail --silent --show-error --location \
+    --retry 3 \
+    --retry-delay 2 \
+    --connect-timeout 10 \
+    --max-time 120 \
+    "${CALICO_BASE_URL}/tigera-operator.yaml" \
+    --output "$CALICO_CACHE_DIR/tigera-operator.yaml"
+}
+
 log 'Waiting for SSH on both VMs'
 wait_for_ssh "$VM1_PUBLIC_IP" || fail "SSH unavailable on VM1: $VM1_PUBLIC_IP"
 wait_for_ssh "$VM2_PUBLIC_IP" || fail "SSH unavailable on VM2: $VM2_PUBLIC_IP"
@@ -183,11 +203,21 @@ vm1_pid=$!
 install_node "$VM2_PUBLIC_IP" &
 vm2_pid=$!
 
+download_calico_manifests &
+CALICO_DOWNLOAD_PID=$!
+
 vm1_status=0
 vm2_status=0
 
 wait "$vm1_pid" || vm1_status=$?
 wait "$vm2_pid" || vm2_status=$?
+wait "$CALICO_DOWNLOAD_PID"
+
+[[ -s "$CALICO_CACHE_DIR/operator-crds.yaml" ]] || \
+  fail "Calico operator CRD manifest was not downloaded"
+
+[[ -s "$CALICO_CACHE_DIR/tigera-operator.yaml" ]] || \
+  fail "Calico operator manifest was not downloaded"
 
 if (( vm1_status != 0 )); then
   fail "Kubernetes prerequisite installation failed on VM1: \
