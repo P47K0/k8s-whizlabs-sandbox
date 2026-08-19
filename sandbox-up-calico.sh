@@ -155,23 +155,51 @@ wait_for_ssh() {
 
 install_node() {
   local host="$1"
+
+  log "[$host] Copying installation script"
+
   scp "${SSH_OPTIONS[@]}" "$NODE_INSTALL" \
     "$ADMIN_USERNAME@$host:/tmp/kubernetes-node-install.sh" >/dev/null
+
+  log "[$host] Installing prerequisites"
+
   ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$host" \
     "chmod +x /tmp/kubernetes-node-install.sh && \
      sudo KUBERNETES_MINOR_VERSION='$KUBERNETES_MINOR_VERSION' \
      /tmp/kubernetes-node-install.sh"
+
+  log "[$host] Installation completed"
 }
 
 log 'Waiting for SSH on both VMs'
 wait_for_ssh "$VM1_PUBLIC_IP" || fail "SSH unavailable on VM1: $VM1_PUBLIC_IP"
 wait_for_ssh "$VM2_PUBLIC_IP" || fail "SSH unavailable on VM2: $VM2_PUBLIC_IP"
 
-log 'Installing Kubernetes prerequisites on VM1'
-install_node "$VM1_PUBLIC_IP"
+log 'Installing Kubernetes prerequisites on VM1 and VM2'
 
-log 'Installing Kubernetes prerequisites on VM2'
-install_node "$VM2_PUBLIC_IP"
+install_node "$VM1_PUBLIC_IP" &
+vm1_pid=$!
+
+install_node "$VM2_PUBLIC_IP" &
+vm2_pid=$!
+
+vm1_status=0
+vm2_status=0
+
+wait "$vm1_pid" || vm1_status=$?
+wait "$vm2_pid" || vm2_status=$?
+
+if (( vm1_status != 0 )); then
+  fail "Kubernetes prerequisite installation failed on VM1: \
+$VM1_PUBLIC_IP (exit code: $vm1_status)"
+fi
+
+if (( vm2_status != 0 )); then
+  fail "Kubernetes prerequisite installation failed on VM2: \
+$VM2_PUBLIC_IP (exit code: $vm2_status)"
+fi
+
+log 'Kubernetes prerequisites installed successfully on both VMs'
 
 log 'Initializing the control plane on VM1'
 scp "${SSH_OPTIONS[@]}" "$CLUSTER_PROVISION" \
