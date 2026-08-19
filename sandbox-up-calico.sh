@@ -20,7 +20,7 @@ BICEP_FILE="${BICEP_FILE:-${SCRIPT_DIR}/kubernetes-sandbox-bicep.bicep}"
 NODE_INSTALL="${NODE_INSTALL:-${SCRIPT_DIR}/kubernetes-node-install.sh}"
 CLUSTER_PROVISION="${CLUSTER_PROVISION:-${SCRIPT_DIR}/kubernetes-cluster-provision.sh}"
 
-RESOURCE_GROUP="rg_sb_"
+RESOURCE_GROUP="${RESOURCE_GROUP:-}"
 LOCATION="$(
   az group show \
     --name "$RESOURCE_GROUP" \
