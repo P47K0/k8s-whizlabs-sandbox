@@ -173,6 +173,10 @@ Common variables include:
 
 Use the variable names defined in the current script if they differ from this table.
 
+## Known limitations
+
+- **Resource group name must be pasted directly into the script** (over the `RESOURCE_GROUP` env var placeholder) rather than being set via a real environment variable — a permission issue prevented reading it from the environment. This is a temporary workaround; a future update will pass it as a CLI argument instead.
+
 ## Networking notes
 
 The cluster uses Calico with VXLAN cross-node networking. The following settings are important:
