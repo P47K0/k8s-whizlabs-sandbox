@@ -193,6 +193,46 @@ operator-crds.yaml
 
 Do not apply `Installation` or `APIServer` resources before their CRDs exist. The parent script generates the custom Calico resources with the configured pod CIDR.
 
+## Accessing the cluster (SSH into the lab)
+
+The validation and troubleshooting commands below assume you are already logged into the control-plane VM (`pk-vm1`) — not just in Cloud Shell.
+
+Get the public IP of `pk-vm1`:
+
+```bash
+az network public-ip show \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "pk-vm1-pip" \
+  --query "ipAddress" \
+  --output tsv
+```
+
+SSH into the control-plane node using the same key pair used to provision the sandbox:
+
+```bash
+ssh -i cka-sandbox azureuser@<pk-vm1-public-ip>
+```
+
+If you already ran `source setup-ssh.sh` and the key is loaded in the agent, you can omit `-i cka-sandbox`:
+
+```bash
+ssh azureuser@<pk-vm1-public-ip>
+```
+
+Once connected, `kubectl` is available directly on the node, since `kubeadm init` configures the control-plane's kubeconfig automatically.
+
+To SSH into the worker node (`pk-vm2`) instead, use the same pattern with its public IP:
+
+```bash
+az network public-ip show \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "pk-vm2-pip" \
+  --query "ipAddress" \
+  --output tsv
+
+ssh azureuser@<pk-vm2-public-ip>
+```
+
 ## Validation commands
 
 Check the nodes:
