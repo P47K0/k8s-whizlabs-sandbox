@@ -13,6 +13,12 @@ set -Eeuo pipefail
 #   SSH_SOURCE_ADDRESS_PREFIX='98.133.214.96/32' \
 #   CALICO_VERSION=v3.31.3 \
 #   ./sandbox-up-calico.sh
+RESOURCE_GROUP="$1"
+
+if [ -z "$RESOURCE_GROUP" ]; then
+  echo "Usage: $0 <resource-group-name>"
+  exit 1
+fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -20,7 +26,6 @@ BICEP_FILE="${BICEP_FILE:-${SCRIPT_DIR}/kubernetes-sandbox-bicep.bicep}"
 NODE_INSTALL="${NODE_INSTALL:-${SCRIPT_DIR}/kubernetes-node-install.sh}"
 CLUSTER_PROVISION="${CLUSTER_PROVISION:-${SCRIPT_DIR}/kubernetes-cluster-provision.sh}"
 
-RESOURCE_GROUP="${RESOURCE_GROUP:-}"
 LOCATION="$(
   az group show \
     --name "$RESOURCE_GROUP" \
