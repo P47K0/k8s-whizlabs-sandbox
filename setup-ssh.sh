@@ -16,6 +16,18 @@ fi
 set -uo pipefail
 
 KEY_DIR="${1:-../}"
+SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY:-${KEY_DIR}/cka-sandbox.pub}"
+SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY:-${KEY_DIR}/cka-sandbox}"
+
+if [[ ! -r "$SSH_PUBLIC_KEY" ]]; then
+  fail "SSH public key not found: $SSH_PUBLIC_KEY"
+  return 1
+fi
+
+if [[ ! -r "$SSH_PRIVATE_KEY" ]]; then
+  fail "SSH private key not found: $SSH_PRIVATE_KEY"
+  return 1
+fi
 
 chmod 700 "$KEY_DIR"
 chmod 600 "$KEY_DIR/cka-sandbox"
