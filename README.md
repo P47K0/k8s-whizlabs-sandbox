@@ -12,10 +12,10 @@ The setup uses:
 - Azure NIC IP forwarding for pod traffic between nodes.
 - An Azure NSG rule that allows SSH from the current Cloud Shell public IP.
 
-The main entry point is:
+The main entry point is (run from within the repository folder):
 
 ```bash
-bash ./sandbox-up-calico.sh
+bash ./sandbox-up-calico.sh <resource-group-name>
 ```
 
 ## What the script does
@@ -91,71 +91,45 @@ cka-sandbox.pub
 
 If you already have the required key pair, do not create another one. Make sure the paths used by the script match the files you intend to use.
 
-## Set SSH key permissions
+## Quick start
 
-Run these commands in the cloud shell from the repository directory:
+1. Clone the repository into Cloud Shell:
 
-```bash
-chmod 700 .
-chmod 600 cka-sandbox
-chmod 644 cka-sandbox.pub
-```
+   ```bash
+   git clone https://github.com/P47K0/k8s-whizlabs-sandbox.git
+   ```
 
-Start the SSH agent and add the private key:
+2. Upload your SSH key pair (`cka-sandbox` and `cka-sandbox.pub`) to the Cloud Shell work directory — **one level above** the cloned repository folder, not inside it.
 
-```bash
-eval "$(ssh-agent -s)"
-ssh-add ./cka-sandbox
-```
+3. Move into the repository folder:
 
-Confirm that the key is loaded:
+   ```bash
+   cd k8s-whizlabs-sandbox/
+   ```
 
-```bash
-ssh-add -l
-```
+4. Prepare the SSH key permissions and load the key into the agent. This step must be **sourced**, not executed, so the `ssh-agent` environment variables persist in your Cloud Shell session:
 
-If the private key has a passphrase, `ssh-add` will prompt for it.
+   ```bash
+   source setup-ssh.sh
+   ```
 
-## Configure the resource group
+   By default, this looks for the keys one directory above the repo (`../`). Pass a different path as an argument if your keys live elsewhere:
 
-You can define the resource group directly in `sandbox-up-calico.sh`, for example:
+   ```bash
+   source setup-ssh.sh /path/to/keys
+   ```
 
-```bash
-RESOURCE_GROUP="rg_k8s_sandbox"
-```
+   Confirm the key loaded successfully:
 
-Alternatively, pass it as an environment variable when starting the script:
+   ```bash
+   ssh-add -l
+   ```
 
-```bash
-RESOURCE_GROUP="rg_k8s_sandbox" bash ./sandbox-up-calico.sh
-```
+5. Run the sandbox, passing your resource group name as an argument. This must be run from within the repository folder:
 
-The environment-variable method is useful when the resource group changes between sandbox sessions.
-
-## Run the sandbox
-
-Make the parent script executable if needed:
-
-```bash
-chmod +x ./sandbox-up-calico.sh
-```
-
-Then run it:
-
-```bash
-bash ./sandbox-up-calico.sh
-```
-
-If the script requires explicit key paths, run:
-
-```bash
-RESOURCE_GROUP="rg_k8s_sandbox" \
-SSH_PUBLIC_KEY="$PWD/cka-sandbox.pub" \
-SSH_PRIVATE_KEY="$PWD/cka-sandbox" \
-bash ./sandbox-up-calico.sh
-```
-
-The script automatically detects the Cloud Shell public IPv4 address with `curl` and adds `/32` before passing it to the Azure deployment. The resulting NSG rule permits SSH only from the current Cloud Shell egress address.
+   ```bash
+   bash sandbox-up-calico.sh rg_sb_centralindia_xxxxx
+   ```
 
 ## Configuration variables
 
@@ -163,19 +137,14 @@ Common variables include:
 
 | Variable | Purpose | Example |
 |---|---|---|
-| `RESOURCE_GROUP` | Azure resource group for the sandbox | `rg_k8s_sandbox` |
 | `LOCATION` | Azure region | `centralindia` |
-| `SSH_PUBLIC_KEY` | SSH public key path | `$PWD/cka-sandbox.pub` |
-| `SSH_PRIVATE_KEY` | SSH private key path | `$PWD/cka-sandbox` |
+| `SSH_PUBLIC_KEY` | SSH public key path | `../cka-sandbox.pub` |
+| `SSH_PRIVATE_KEY` | SSH private key path | `../cka-sandbox` |
 | `CALICO_VERSION` | Calico release | `v3.31.3` |
 | `KUBERNETES_MINOR_VERSION` | Kubernetes minor version | `v1.36` |
 | `ADMIN_USERNAME` | Administrator username | `azureuser` |
 
-Use the variable names defined in the current script if they differ from this table.
-
-## Known limitations
-
-- **Resource group name must be pasted directly into the script** (over the `RESOURCE_GROUP` env var placeholder) rather than being set via a real environment variable — a permission issue prevented reading it from the environment. This is a temporary workaround; a future update will pass it as a CLI argument instead.
+The resource group is passed as a positional CLI argument to `sandbox-up-calico.sh`, not set via an environment variable. Use the variable names defined in the current script if they differ from this table.
 
 ## Networking notes
 
@@ -306,6 +275,10 @@ kubectl -n calico-system get pods -o wide
 ```
 
 Then verify Azure NIC IP forwarding and the NSG node-to-node rules.
+
+### `setup-ssh.sh` prints a "must be sourced" warning
+
+This script sets `ssh-agent` environment variables that need to persist in your current shell. Run it with `source setup-ssh.sh` (or `. setup-ssh.sh`), not `bash setup-ssh.sh` or `./setup-ssh.sh`.
 
 ## Cleanup
 
