@@ -1,720 +1,403 @@
-# Automated Two-Node Kubernetes Azure Sandbox
-
-This repository provisions and configures a two-node, self-managed Kubernetes cluster on Azure virtual machines.
-
-The setup uses:
-
-- Ubuntu Azure VMs.
-- `kubeadm` for Kubernetes bootstrapping.
-- `containerd` as the container runtime.
-- Calico as the pod network plugin.
-- VXLAN cross-node networking.
-- Azure NIC IP forwarding for pod traffic between nodes.
-- An Azure NSG rule that allows SSH from the current Cloud Shell public IP.
-
-The main entry point is (run from within the repository folder):
-
-```bash
-bash ./sandbox-up-calico.sh <resource-group-name>
-```
-
-## What the script does
-
-The parent script automates the complete workflow:
-
-1. Detects the current Cloud Shell public IPv4 address.
-2. Passes the address to the Bicep deployment as an SSH `/32` source.
-3. Creates the Azure networking resources and two VMs.
-4. Enables IP forwarding on both VM NICs.
-5. Configures SSH access through the NSG.
-6. Installs the Kubernetes prerequisites.
-7. Initializes the control-plane node with `kubeadm`.
-8. Retrieves the worker join command.
-9. Joins the second VM as a worker.
-10. Downloads and installs the Calico operator and CRDs.
-11. Applies the Calico installation configuration using the selected pod CIDR.
-12. Waits for the cluster and Calico to become ready.
-13. Runs the configured connectivity checks.
-
-## Prerequisites
-
-You need:
-
-- An Azure subscription or sandbox account.
-- Azure Cloud Shell with Bash.
-- Azure CLI.
-- `curl`, `ssh`, `ssh-agent`, and `scp`.
-- Permission to create and update Azure resources in the target resource group.
-- The repository files copied into Cloud Shell.
-
-Log in to Azure before running the script if necessary:
-
-```bash
-az login
-```
-
-Check the active subscription:
-
-```bash
-az account show
-```
-
-If you have more than one subscription, select the correct one:
-
-```bash
-az account set --subscription "<subscription-id-or-name>"
-```
-
-## Create the SSH key pair
-
-Create an Ed25519 key pair for the sandbox:
-
-```bash
-ssh-keygen -t ed25519 -f ./cka-sandbox -C "cka-sandbox"
-```
-
-When prompted for a passphrase, using a passphrase is recommended. This creates:
-
-```text
-cka-sandbox       Private key
-cka-sandbox.pub   Public key
-```
-
-Never commit the private key to GitHub. The `.gitignore` file should include:
-
-```gitignore
-cka-sandbox
-cka-sandbox.pub
-*.pem
-*.key
-.last-resource-group
-```
-
-If you already have the required key pair, do not create another one. Make sure the paths used by the script match the files you intend to use.
-
-## Quick start
-
-1. Clone the repository into Cloud Shell:
-
-   ```bash
-   git clone https://github.com/P47K0/k8s-whizlabs-sandbox.git
-   ```
-
-2. Upload your SSH key pair (`cka-sandbox` and `cka-sandbox.pub`) to the Cloud Shell work directory — **one level above** the cloned repository folder, not inside it.
-
-3. Move into the repository folder:
-
-   ```bash
-   cd k8s-whizlabs-sandbox/
-   ```
-
-4. Prepare the SSH key permissions and load the key into the agent. This step must be **sourced**, not executed, so the `ssh-agent` environment variables persist in your Cloud Shell session:
-
-   ```bash
-   source setup-ssh.sh
-   ```
-
-   By default, this looks for the keys one directory above the repo (`../`). Pass a different path as an argument if your keys live elsewhere:
-
-   ```bash
-   source setup-ssh.sh /path/to/keys
-   ```
-
-   Confirm the key loaded successfully:
-
-   ```bash
-   ssh-add -l
-   ```
-
-5. Run the sandbox, passing your resource group name as an argument. This must be run from within the repository folder:
-
-   ```bash
-   bash sandbox-up-calico.sh rg_sb_centralindia_xxxxx
-   ```
-
-   This also saves the resource group name to `.last-resource-group` in the repo folder, so you don't need to type it again.
-
-6. SSH into the control-plane node:
-
-   ```bash
-   bash connect.sh control
-   ```
-
-   Or the worker node:
-
-   ```bash
-   bash connect.sh worker
-   ```
-
-## Configuration variables
-
-Common variables include:
-
-| Variable | Purpose | Example |
-|---|---|---|
-| `LOCATION` | Azure region | `centralindia` |
-| `SSH_PUBLIC_KEY` | SSH public key path | `../cka-sandbox.pub` |
-| `SSH_PRIVATE_KEY` | SSH private key path | `../cka-sandbox` |
-| `CALICO_VERSION` | Calico release | `v3.31.3` |
-| `KUBERNETES_MINOR_VERSION` | Kubernetes minor version | `v1.36` |
-| `ADMIN_USERNAME` | Administrator username | `azureuser` |
-
-The resource group is passed as a positional CLI argument to `sandbox-up-calico.sh`, not set via an environment variable. Use the variable names defined in the current script if they differ from this table.
-
-## Networking notes
-
-The cluster uses Calico with VXLAN cross-node networking. The following settings are important:
-
-- The Azure VM NICs must have IP forwarding enabled.
-- Linux IPv4 forwarding must be enabled on both nodes.
-- The pod CIDR must match between `kubeadm` and Calico.
-- The NSG must allow the required node-to-node traffic.
-- The Cloud Shell public IP is used only for SSH access; it is not the pod-network address.
-
-A direct pod-IP test is useful when troubleshooting:
-
-```bash
-ping <remote-pod-ip>
-```
-
-If this fails, DNS is not involved because the destination is already a numeric IP address. Test DNS separately:
-
-```bash
-nslookup kubernetes.default
-```
-
-The troubleshooting order should be:
-
-```text
-VM access
-→ node-to-node private connectivity
-→ node readiness
-→ Calico status
-→ pod-to-pod IP connectivity
-→ DNS resolution
-→ Service connectivity
-```
-
-## Calico installation order
-
-The Calico manifests must be applied in dependency order:
-
-```text
-operator-crds.yaml
-→ tigera-operator.yaml
-→ wait for operator CRDs
-→ Calico Installation custom resource
-```
-
-Do not apply `Installation` or `APIServer` resources before their CRDs exist. The parent script generates the custom Calico resources with the configured pod CIDR.
-
-## Accessing the cluster (SSH into the lab)
-
-The validation and troubleshooting commands below assume you are already logged into the control-plane VM (`pk-vm1`) — not just in Cloud Shell.
-
-Use `connect.sh` to look up the right VM's public IP and SSH into it in one step:
-
-```bash
-bash connect.sh control
-```
-
-```bash
-bash connect.sh worker
-```
-
-`connect.sh` reads the resource group from `.last-resource-group` (created automatically by `sandbox-up-calico.sh`), so no argument is needed after a successful sandbox run. To target a different resource group explicitly:
-
-```bash
-bash connect.sh control rg_other_sandbox
-```
-
-Once connected, `kubectl` is available directly on the control-plane node, since `kubeadm init` configures its kubeconfig automatically.
-
-## Validation commands
-
-Check the nodes:
-
-```bash
-kubectl get nodes -o wide
-```
-
-Check all pods:
-
-```bash
-kubectl get pods -A -o wide
-```
-
-Check Calico status:
-
-```bash
-kubectl get tigerastatus
-```
-
-Check the Calico system pods:
-
-```bash
-kubectl -n calico-system get pods -o wide
-```
-
-Check the Azure NIC forwarding setting:
-
-```bash
-az network nic show \
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Creates the Azure sandbox, installs Kubernetes prerequisites, initializes VM1,
+# installs Calico, joins VM2, and prints cluster status.
+# Expected companion files:
+#   kubernetes-sandbox-bicep.bicep
+#   kubernetes-node-install.sh
+#   kubernetes-cluster-provision.sh
+#
+# Example:
+#   RESOURCE_GROUP=k8s-sandbox \
+#   SSH_SOURCE_ADDRESS_PREFIX='98.133.214.96/32' \
+#   CALICO_VERSION=v3.31.3 \
+#   ./sandbox-up-calico.sh
+RESOURCE_GROUP="$1"
+
+if [ -z "$RESOURCE_GROUP" ]; then
+  echo "Usage: $0 <resource-group-name>"
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+BICEP_FILE="${BICEP_FILE:-${SCRIPT_DIR}/kubernetes-sandbox-bicep.bicep}"
+NODE_INSTALL="${NODE_INSTALL:-${SCRIPT_DIR}/kubernetes-node-install.sh}"
+CLUSTER_PROVISION="${CLUSTER_PROVISION:-${SCRIPT_DIR}/kubernetes-cluster-provision.sh}"
+
+LOCATION="$(
+  az group show \
+    --name "$RESOURCE_GROUP" \
+    --query location \
+    --output tsv
+)"
+ADMIN_USERNAME="${ADMIN_USERNAME:-azureuser}"
+SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY:-${SCRIPT_DIR}/../cka-sandbox.pub}"
+SSH_PRIVATE_KEY="${SSH_PRIVATE_KEY:-${SCRIPT_DIR}/../cka-sandbox}"
+KUBERNETES_MINOR_VERSION="${KUBERNETES_MINOR_VERSION:-v1.36}"
+SSH_SOURCE_ADDRESS_PREFIX="${SSH_SOURCE_ADDRESS_PREFIX:-}"
+
+# Pin this in real use. It must have matching manifests at the URLs below.
+CALICO_VERSION="${CALICO_VERSION:-v3.31.3}"
+
+# The Bicep default is 192.168.0.0/16. The Calico custom resource is generated
+# locally from the Bicep output so it always uses the actual pod CIDR.
+CALICO_CRD_URL="${CALICO_CRD_URL:-https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/custom-resources.yaml}"
+CALICO_OPERATOR_URL="${CALICO_OPERATOR_URL:-https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml}"
+
+log() { printf '\n==> %s\n' "$*"; }
+fail() { echo "ERROR: $*" >&2; exit 1; }
+
+command -v az >/dev/null || fail 'Azure CLI is required.'
+command -v ssh >/dev/null || fail 'ssh is required.'
+command -v scp >/dev/null || fail 'scp is required.'
+command -v curl >/dev/null || fail 'curl is required to download Calico manifests.'
+az account show >/dev/null 2>&1 || fail 'Run az login first.'
+
+if [[ -n "${CLOUD_SHELL_PUBLIC_IP:-}" ]]; then
+  log "Using supplied Cloud Shell public IP: $CLOUD_SHELL_PUBLIC_IP"
+else
+  CLOUD_SHELL_PUBLIC_IP="$(curl -4 -fsS --max-time 10 https://ifconfig.me)" || \
+    fail "Could not determine the Cloud Shell public IP with curl"
+fi
+
+CLOUD_SHELL_PUBLIC_IP="$(printf '%s' "$CLOUD_SHELL_PUBLIC_IP" | tr -d '[:space:]')"
+
+[[ "$CLOUD_SHELL_PUBLIC_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || \
+  fail "Invalid Cloud Shell public IPv4 address: $CLOUD_SHELL_PUBLIC_IP"
+  
+log "Cloud Shell public IP: $CLOUD_SHELL_PUBLIC_IP"
+log "SSH whitelist source: $SSH_SOURCE_ADDRESS_PREFIX"
+log "Resource group: $RESOURCE_GROUP"
+
+az group show --name "$RESOURCE_GROUP" >/dev/null 2>&1 || \
+  fail "Resource group '$RESOURCE_GROUP' was not found."
+  
+[[ -n "$LOCATION" ]] || fail "Could not determine the resource-group location."
+
+log "Using resource group '$RESOURCE_GROUP' in '$LOCATION'"
+
+[[ -r "$SSH_PUBLIC_KEY" ]] || fail "SSH public key not readable: $SSH_PUBLIC_KEY"
+[[ -r "$SSH_PRIVATE_KEY" ]] || fail "SSH private key not readable: $SSH_PRIVATE_KEY"
+[[ -f "$BICEP_FILE" ]] || fail "Bicep file not found: $BICEP_FILE"
+[[ -f "$NODE_INSTALL" ]] || fail "Node install script not found: $NODE_INSTALL"
+[[ -f "$CLUSTER_PROVISION" ]] || fail "Cluster provision script not found: $CLUSTER_PROVISION"
+
+SSH_OPTIONS=(-i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
+PARAM_ARGS=(
+  "location=$LOCATION"
+  "adminUsername=$ADMIN_USERNAME"
+  "sshPublicKey=$(<"$SSH_PUBLIC_KEY")"
+)
+[[ -n "$SSH_SOURCE_ADDRESS_PREFIX" ]] && PARAM_ARGS+=("sshSourceAddressPrefix=$SSH_SOURCE_ADDRESS_PREFIX")
+[[ -n "$CLOUD_SHELL_PUBLIC_IP" ]] && PARAM_ARGS+=("cloudShellPublicIp=$CLOUD_SHELL_PUBLIC_IP")
+
+log 'Creating the resource group if necessary'
+az group show --name "$RESOURCE_GROUP" >/dev/null 2>&1 || \
+  az group create --name "$RESOURCE_GROUP" --location "$LOCATION" >/dev/null
+
+log 'Validating the Bicep template'
+az deployment group validate \
   --resource-group "$RESOURCE_GROUP" \
-  --name "pk-vm1-nic" \
-  --query '{name:name,ipForwarding:enableIPForwarding}' \
-  --output table
+  --template-file "$BICEP_FILE" \
+  --parameters "${PARAM_ARGS[@]}" >/dev/null
 
-az network nic show \
+DEPLOYMENT_NAME="k8s-sandbox-$(date +%Y%m%d%H%M%S)"
+log "Deploying infrastructure as $DEPLOYMENT_NAME"
+az deployment group create \
+  --name "$DEPLOYMENT_NAME" \
   --resource-group "$RESOURCE_GROUP" \
-  --name "pk-vm2-nic" \
-  --query '{name:name,ipForwarding:enableIPForwarding}' \
-  --output table
-```
-
-Both NICs should report:
-
-```text
-True
-```
-
-## Common problems
-
-### SSH waits indefinitely
-
-Check the current Cloud Shell public IP:
-
-```bash
-curl -4 -fsS https://ifconfig.me
-echo
-```
-
-Then verify that the NSG rule `AllowSshFromCloudShell` contains that address with `/32`.
-
-### Calico custom resources are rejected
-
-If Kubernetes reports that `Installation`, `APIServer`, `Goldmane`, or `Whisker` is unknown, the operator CRDs have not been installed or established yet. Apply the operator CRDs first, wait for the CRDs, and only then apply the custom resources.
-
-### Worker script reports `POD_CIDR is required`
-
-The parent script must pass the pod CIDR when invoking the worker provisioning script. The value must be the same one used by `kubeadm init` and the Calico `Installation` resource.
-
-### Pod IP connectivity fails across nodes
-
-Check:
-
-```bash
-sysctl net.ipv4.ip_forward
-ip -d link show vxlan.calico
-ip route
-kubectl get tigerastatus
-kubectl -n calico-system get pods -o wide
-```
-
-Then verify Azure NIC IP forwarding and the NSG node-to-node rules.
-
-### `setup-ssh.sh` prints a "must be sourced" warning
-
-This script sets `ssh-agent` environment variables that need to persist in your current shell. Run it with `source setup-ssh.sh` (or `. setup-ssh.sh`), not `bash setup-ssh.sh` or `./setup-ssh.sh`.
-
-### `connect.sh` reports no resource group found
-
-`connect.sh` reads the resource group from `.last-resource-group`, written automatically by `sandbox-up-calico.sh` after a successful run. If this file is missing (e.g. it was manually removed, or the sandbox script failed before completing), either re-run the sandbox script or pass the resource group explicitly:
-
-```bash
-bash connect.sh control rg_sb_centralindia_xxxxx
-```
-
-## Cleanup
-
-If the resource group is dedicated to this sandbox, deleting it removes all resources inside it:
-
-```bash
-az group delete \
-  --name "$RESOURCE_GROUP" \
-  --yes
-```
-
-Use this only when the resource group contains no resources you need to keep.
-
-## Security notes
-
-- Do not commit private SSH keys.
-- Restrict the SSH NSG rule to the current Cloud Shell public IP using `/32`.
-- Cloud Shell’s public egress IP can change between sessions.
-- Delete the sandbox resource group when finished if it is no longer needed.
-- Review the scripts before running them in a subscription containing unrelated resources.
-
-## Learning objective
-
-This repository is intended for learning and sandbox use. I created this for CKA preparation. It demonstrates how a self-managed, kubeadm-based Kubernetes cluster is assembled from the infrastructure layer upward:
-
-```text
-Azure VMs and networking
-→ Linux prerequisites
-→ container runtime
-→ kubeadm control plane
-→ worker join
-→ Calico CNI
-→ pod networking and DNS validation
-```
-# Automated Two-Node Kubernetes Azure Sandbox
-
-This repository provisions and configures a two-node, self-managed Kubernetes cluster on Azure virtual machines.
-
-The setup uses:
-
-- Ubuntu Azure VMs.
-- `kubeadm` for Kubernetes bootstrapping.
-- `containerd` as the container runtime.
-- Calico as the pod network plugin.
-- VXLAN cross-node networking.
-- Azure NIC IP forwarding for pod traffic between nodes.
-- An Azure NSG rule that allows SSH from the current Cloud Shell public IP.
-
-The main entry point is (run from within the repository folder):
-
-```bash
-bash ./sandbox-up-calico.sh <resource-group-name>
-```
-
-## What the script does
-
-The parent script automates the complete workflow:
-
-1. Detects the current Cloud Shell public IPv4 address.
-2. Passes the address to the Bicep deployment as an SSH `/32` source.
-3. Creates the Azure networking resources and two VMs.
-4. Enables IP forwarding on both VM NICs.
-5. Configures SSH access through the NSG.
-6. Installs the Kubernetes prerequisites.
-7. Initializes the control-plane node with `kubeadm`.
-8. Retrieves the worker join command.
-9. Joins the second VM as a worker.
-10. Downloads and installs the Calico operator and CRDs.
-11. Applies the Calico installation configuration using the selected pod CIDR.
-12. Waits for the cluster and Calico to become ready.
-13. Runs the configured connectivity checks.
-
-## Prerequisites
-
-You need:
-
-- An Azure subscription or sandbox account.
-- Azure Cloud Shell with Bash.
-- Azure CLI.
-- `curl`, `ssh`, `ssh-agent`, and `scp`.
-- Permission to create and update Azure resources in the target resource group.
-- The repository files copied into Cloud Shell.
-
-Log in to Azure before running the script if necessary:
-
-```bash
-az login
-```
-
-Check the active subscription:
-
-```bash
-az account show
-```
-
-If you have more than one subscription, select the correct one:
-
-```bash
-az account set --subscription "<subscription-id-or-name>"
-```
-
-## Create the SSH key pair
-
-Create an Ed25519 key pair for the sandbox:
-
-```bash
-ssh-keygen -t ed25519 -f ./cka-sandbox -C "cka-sandbox"
-```
-
-When prompted for a passphrase, using a passphrase is recommended. This creates:
-
-```text
-cka-sandbox       Private key
-cka-sandbox.pub   Public key
-```
-
-Never commit the private key to GitHub. The `.gitignore` file should include:
-
-```gitignore
-cka-sandbox
-cka-sandbox.pub
-*.pem
-*.key
-.last-resource-group
-```
-
-If you already have the required key pair, do not create another one. Make sure the paths used by the script match the files you intend to use.
-
-## Quick start
-
-1. Clone the repository into Cloud Shell:
-
-   ```bash
-   git clone https://github.com/P47K0/k8s-whizlabs-sandbox.git
-   ```
-
-2. Upload your SSH key pair (`cka-sandbox` and `cka-sandbox.pub`) to the Cloud Shell work directory — **one level above** the cloned repository folder, not inside it.
-
-3. Move into the repository folder:
-
-   ```bash
-   cd k8s-whizlabs-sandbox/
-   ```
-
-4. Prepare the SSH key permissions and load the key into the agent. This step must be **sourced**, not executed, so the `ssh-agent` environment variables persist in your Cloud Shell session:
-
-   ```bash
-   source setup-ssh.sh
-   ```
-
-   By default, this looks for the keys one directory above the repo (`../`). Pass a different path as an argument if your keys live elsewhere:
-
-   ```bash
-   source setup-ssh.sh /path/to/keys
-   ```
-
-   Confirm the key loaded successfully:
-
-   ```bash
-   ssh-add -l
-   ```
-
-5. Run the sandbox, passing your resource group name as an argument. This must be run from within the repository folder:
-
-   ```bash
-   bash sandbox-up-calico.sh rg_sb_centralindia_xxxxx
-   ```
-
-   This also saves the resource group name to `.last-resource-group` in the repo folder, so you don't need to type it again.
-
-6. SSH into the control-plane node:
-
-   ```bash
-   bash connect.sh control
-   ```
-
-   Or the worker node:
-
-   ```bash
-   bash connect.sh worker
-   ```
-
-## Configuration variables
-
-Common variables include:
-
-| Variable | Purpose | Example |
-|---|---|---|
-| `LOCATION` | Azure region | `centralindia` |
-| `SSH_PUBLIC_KEY` | SSH public key path | `../cka-sandbox.pub` |
-| `SSH_PRIVATE_KEY` | SSH private key path | `../cka-sandbox` |
-| `CALICO_VERSION` | Calico release | `v3.31.3` |
-| `KUBERNETES_MINOR_VERSION` | Kubernetes minor version | `v1.36` |
-| `ADMIN_USERNAME` | Administrator username | `azureuser` |
-
-The resource group is passed as a positional CLI argument to `sandbox-up-calico.sh`, not set via an environment variable. Use the variable names defined in the current script if they differ from this table.
-
-## Networking notes
-
-The cluster uses Calico with VXLAN cross-node networking. The following settings are important:
-
-- The Azure VM NICs must have IP forwarding enabled.
-- Linux IPv4 forwarding must be enabled on both nodes.
-- The pod CIDR must match between `kubeadm` and Calico.
-- The NSG must allow the required node-to-node traffic.
-- The Cloud Shell public IP is used only for SSH access; it is not the pod-network address.
-
-A direct pod-IP test is useful when troubleshooting:
-
-```bash
-ping <remote-pod-ip>
-```
-
-If this fails, DNS is not involved because the destination is already a numeric IP address. Test DNS separately:
-
-```bash
-nslookup kubernetes.default
-```
-
-The troubleshooting order should be:
-
-```text
-VM access
-→ node-to-node private connectivity
-→ node readiness
-→ Calico status
-→ pod-to-pod IP connectivity
-→ DNS resolution
-→ Service connectivity
-```
-
-## Calico installation order
-
-The Calico manifests must be applied in dependency order:
-
-```text
-operator-crds.yaml
-→ tigera-operator.yaml
-→ wait for operator CRDs
-→ Calico Installation custom resource
-```
-
-Do not apply `Installation` or `APIServer` resources before their CRDs exist. The parent script generates the custom Calico resources with the configured pod CIDR.
-
-## Accessing the cluster (SSH into the lab)
-
-The validation and troubleshooting commands below assume you are already logged into the control-plane VM (`pk-vm1`) — not just in Cloud Shell.
-
-Use `connect.sh` to look up the right VM's public IP and SSH into it in one step:
-
-```bash
-bash connect.sh control
-```
-
-```bash
-bash connect.sh worker
-```
-
-`connect.sh` reads the resource group from `.last-resource-group` (created automatically by `sandbox-up-calico.sh`), so no argument is needed after a successful sandbox run. To target a different resource group explicitly:
-
-```bash
-bash connect.sh control rg_other_sandbox
-```
-
-Once connected, `kubectl` is available directly on the control-plane node, since `kubeadm init` configures its kubeconfig automatically.
-
-## Validation commands
-
-Check the nodes:
-
-```bash
-kubectl get nodes -o wide
-```
-
-Check all pods:
-
-```bash
-kubectl get pods -A -o wide
-```
-
-Check Calico status:
-
-```bash
-kubectl get tigerastatus
-```
-
-Check the Calico system pods:
-
-```bash
-kubectl -n calico-system get pods -o wide
-```
-
-Check the Azure NIC forwarding setting:
-
-```bash
-az network nic show \
-  --resource-group "$RESOURCE_GROUP" \
-  --name "pk-vm1-nic" \
-  --query '{name:name,ipForwarding:enableIPForwarding}' \
-  --output table
-
-az network nic show \
-  --resource-group "$RESOURCE_GROUP" \
-  --name "pk-vm2-nic" \
-  --query '{name:name,ipForwarding:enableIPForwarding}' \
-  --output table
-```
-
-Both NICs should report:
-
-```text
-True
-```
-
-## Common problems
-
-### SSH waits indefinitely
-
-Check the current Cloud Shell public IP:
-
-```bash
-curl -4 -fsS https://ifconfig.me
-echo
-```
-
-Then verify that the NSG rule `AllowSshFromCloudShell` contains that address with `/32`.
-
-### Calico custom resources are rejected
-
-If Kubernetes reports that `Installation`, `APIServer`, `Goldmane`, or `Whisker` is unknown, the operator CRDs have not been installed or established yet. Apply the operator CRDs first, wait for the CRDs, and only then apply the custom resources.
-
-### Worker script reports `POD_CIDR is required`
-
-The parent script must pass the pod CIDR when invoking the worker provisioning script. The value must be the same one used by `kubeadm init` and the Calico `Installation` resource.
-
-### Pod IP connectivity fails across nodes
-
-Check:
-
-```bash
-sysctl net.ipv4.ip_forward
-ip -d link show vxlan.calico
-ip route
-kubectl get tigerastatus
-kubectl -n calico-system get pods -o wide
-```
-
-Then verify Azure NIC IP forwarding and the NSG node-to-node rules.
-
-### `setup-ssh.sh` prints a "must be sourced" warning
-
-This script sets `ssh-agent` environment variables that need to persist in your current shell. Run it with `source setup-ssh.sh` (or `. setup-ssh.sh`), not `bash setup-ssh.sh` or `./setup-ssh.sh`.
-
-### `connect.sh` reports no resource group found
-
-`connect.sh` reads the resource group from `.last-resource-group`, written automatically by `sandbox-up-calico.sh` after a successful run. If this file is missing (e.g. it was manually removed, or the sandbox script failed before completing), either re-run the sandbox script or pass the resource group explicitly:
-
-```bash
-bash connect.sh control rg_sb_centralindia_xxxxx
-```
-
-## Cleanup
-
-If the resource group is dedicated to this sandbox, deleting it removes all resources inside it:
-
-```bash
-az group delete \
-  --name "$RESOURCE_GROUP" \
-  --yes
-```
-
-Use this only when the resource group contains no resources you need to keep.
-
-## Security notes
-
-- Do not commit private SSH keys.
-- Restrict the SSH NSG rule to the current Cloud Shell public IP using `/32`.
-- Cloud Shell’s public egress IP can change between sessions.
-- Delete the sandbox resource group when finished if it is no longer needed.
-- Review the scripts before running them in a subscription containing unrelated resources.
-
-## Learning objective
-
-This repository is intended for learning and sandbox use. I created this for CKA preparation. It demonstrates how a self-managed, kubeadm-based Kubernetes cluster is assembled from the infrastructure layer upward:
-
-```text
-Azure VMs and networking
-→ Linux prerequisites
-→ container runtime
-→ kubeadm control plane
-→ worker join
-→ Calico CNI
-→ pod networking and DNS validation
-```
+  --template-file "$BICEP_FILE" \
+  --parameters "${PARAM_ARGS[@]}" >/dev/null
+
+output() {
+  az deployment group show \
+    --resource-group "$RESOURCE_GROUP" \
+    --name "$DEPLOYMENT_NAME" \
+    --query "properties.outputs.$1.value" \
+    --output tsv
+}
+
+VM1_NAME="$(output vm1Name)"
+VM2_NAME="$(output vm2Name)"
+CONTROL_PLANE_PRIVATE_IP="$(output controlPlanePrivateIp)"
+WORKER_PRIVATE_IP="$(output workerPrivateIp)"
+POD_CIDR="$(output podCidr)"
+SERVICE_CIDR="$(output serviceCidr)"
+VM1_PUBLIC_IP="$(output vm1PublicIpAddress)"
+VM2_PUBLIC_IP="$(output vm2PublicIpAddress)"
+
+[[ -n "$VM1_NAME" && -n "$VM2_NAME" ]] || fail 'VM name outputs are empty.'
+[[ -n "$CONTROL_PLANE_PRIVATE_IP" && -n "$WORKER_PRIVATE_IP" ]] || fail 'Private IP outputs are empty.'
+[[ -n "$POD_CIDR" && -n "$SERVICE_CIDR" ]] || fail 'Kubernetes CIDR outputs are empty.'
+[[ -n "$VM1_PUBLIC_IP" && -n "$VM2_PUBLIC_IP" ]] || fail 'Public IP outputs are empty.'
+
+cat <<EOF
+
+Deployment outputs:
+  VM1 name:             $VM1_NAME
+  VM1 public IP:        $VM1_PUBLIC_IP
+  VM1 private IP:       $CONTROL_PLANE_PRIVATE_IP
+  VM2 name:             $VM2_NAME
+  VM2 public IP:        $VM2_PUBLIC_IP
+  VM2 private IP:       $WORKER_PRIVATE_IP
+  Pod CIDR:             $POD_CIDR
+  Service CIDR:         $SERVICE_CIDR
+  Calico version:       $CALICO_VERSION
+EOF
+
+wait_for_ssh() {
+  local host="$1"
+  for _ in {1..30}; do
+    if ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$host" true >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 10
+  done
+  return 1
+}
+
+install_node() {
+  local host="$1"
+
+  log "[$host] Copying installation script"
+
+  scp "${SSH_OPTIONS[@]}" "$NODE_INSTALL" \
+    "$ADMIN_USERNAME@$host:/tmp/kubernetes-node-install.sh" \
+    >/dev/null
+
+  log "[$host] Installing prerequisites"
+
+  ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$host" \
+    "chmod +x /tmp/kubernetes-node-install.sh && \
+     sudo KUBERNETES_MINOR_VERSION='$KUBERNETES_MINOR_VERSION' \
+     /tmp/kubernetes-node-install.sh"
+
+  log "[$host] Installation completed"
+}
+
+WORK_DIR="$(mktemp -d)"
+CALICO_CACHE_DIR="$WORK_DIR/calico"
+mkdir -p "$CALICO_CACHE_DIR"
+
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+download_calico_manifests() {
+  local calico_base_url
+
+  calico_base_url="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests"
+
+  curl --fail --silent --show-error --location \
+    --retry 3 \
+    --retry-delay 2 \
+    --connect-timeout 10 \
+    --max-time 120 \
+    "${calico_base_url}/operator-crds.yaml" \
+    --output "$CALICO_CACHE_DIR/operator-crds.yaml"
+
+  curl --fail --silent --show-error --location \
+    --retry 3 \
+    --retry-delay 2 \
+    --connect-timeout 10 \
+    --max-time 120 \
+    "${calico_base_url}/tigera-operator.yaml" \
+    --output "$CALICO_CACHE_DIR/tigera-operator.yaml"
+
+  [[ -s "$CALICO_CACHE_DIR/operator-crds.yaml" ]] || \
+    fail "Calico operator CRD manifest is empty"
+
+  [[ -s "$CALICO_CACHE_DIR/tigera-operator.yaml" ]] || \
+    fail "Calico operator manifest is empty"
+}
+
+log 'Waiting for SSH on both VMs'
+wait_for_ssh "$VM1_PUBLIC_IP" || \
+  fail "SSH unavailable on VM1: $VM1_PUBLIC_IP"
+
+wait_for_ssh "$VM2_PUBLIC_IP" || \
+  fail "SSH unavailable on VM2: $VM2_PUBLIC_IP"
+
+log 'Installing Kubernetes prerequisites on VM1 and VM2'
+
+install_node "$VM1_PUBLIC_IP" &
+vm1_pid=$!
+
+install_node "$VM2_PUBLIC_IP" &
+vm2_pid=$!
+
+download_calico_manifests &
+CALICO_DOWNLOAD_PID=$!
+
+vm1_status=0
+vm2_status=0
+
+wait "$vm1_pid" || vm1_status=$?
+wait "$vm2_pid" || vm2_status=$?
+
+if ! wait "$CALICO_DOWNLOAD_PID"; then
+  fail "Calico manifest download failed"
+fi
+
+if (( vm1_status != 0 )); then
+  fail "Kubernetes prerequisite installation failed on VM1: \
+$VM1_PUBLIC_IP (exit code: $vm1_status)"
+fi
+
+if (( vm2_status != 0 )); then
+  fail "Kubernetes prerequisite installation failed on VM2: \
+$VM2_PUBLIC_IP (exit code: $vm2_status)"
+fi
+
+log 'Kubernetes prerequisites installed successfully on both VMs'
+
+log 'Initializing the control plane on VM1'
+
+scp "${SSH_OPTIONS[@]}" "$CLUSTER_PROVISION" \
+  "$ADMIN_USERNAME@$VM1_PUBLIC_IP:/tmp/kubernetes-cluster-provision.sh" \
+  >/dev/null
+
+ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$VM1_PUBLIC_IP" \
+  "chmod +x /tmp/kubernetes-cluster-provision.sh && \
+   sudo CONTROL_PLANE=true \
+   POD_CIDR='$POD_CIDR' \
+   SERVICE_CIDR='$SERVICE_CIDR' \
+   ADVERTISE_ADDRESS='$CONTROL_PLANE_PRIVATE_IP' \
+   /tmp/kubernetes-cluster-provision.sh"
+
+CALICO_CUSTOM_RESOURCES_FILE="$WORK_DIR/custom-resources.yaml"
+
+cat >"$CALICO_CUSTOM_RESOURCES_FILE" <<EOF
+# Generated by sandbox-up.sh
+# Pod CIDR comes from the Bicep deployment output.
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  calicoNetwork:
+    ipPools:
+      - name: default-ipv4-ippool
+        cidr: ${POD_CIDR}
+        encapsulation: VXLANCrossSubnet
+        natOutgoing: Enabled
+        nodeSelector: all()
+---
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+EOF
+
+log "Copying Calico manifests to VM1"
+
+scp "${SSH_OPTIONS[@]}" \
+  "$CALICO_CACHE_DIR/operator-crds.yaml" \
+  "$ADMIN_USERNAME@$VM1_PUBLIC_IP:/tmp/calico-operator-crds.yaml" \
+  >/dev/null
+
+scp "${SSH_OPTIONS[@]}" \
+  "$CALICO_CACHE_DIR/tigera-operator.yaml" \
+  "$ADMIN_USERNAME@$VM1_PUBLIC_IP:/tmp/calico-operator.yaml" \
+  >/dev/null
+
+scp "${SSH_OPTIONS[@]}" \
+  "$CALICO_CUSTOM_RESOURCES_FILE" \
+  "$ADMIN_USERNAME@$VM1_PUBLIC_IP:/tmp/calico-custom-resources.yaml" \
+  >/dev/null
+  
+log "Installing Calico operator CRDs and Tigera Operator"
+
+ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$VM1_PUBLIC_IP" \
+  "sudo cp /etc/kubernetes/admin.conf /tmp/admin.conf && \
+   sudo chown $ADMIN_USERNAME:$ADMIN_USERNAME /tmp/admin.conf && \
+   export KUBECONFIG=/tmp/admin.conf && \
+   kubectl create -f /tmp/calico-operator-crds.yaml && \
+   kubectl create -f /tmp/calico-operator.yaml"
+   
+log "Waiting for Tigera Operator and CRDs"
+
+ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$VM1_PUBLIC_IP" \
+  "export KUBECONFIG=/tmp/admin.conf && \
+   kubectl -n tigera-operator rollout status deployment/tigera-operator --timeout=300s && \
+   kubectl wait --for=condition=Established \
+     crd/installations.operator.tigera.io \
+     --timeout=300s && \
+   kubectl wait --for=condition=Established \
+     crd/apiservers.operator.tigera.io \
+     --timeout=300s && \
+   kubectl wait --for=condition=Established \
+     crd/goldmanes.operator.tigera.io \
+     --timeout=300s && \
+   kubectl wait --for=condition=Established \
+     crd/whiskers.operator.tigera.io \
+     --timeout=300s"   
+
+log "Applying Calico custom resources"
+
+ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$VM1_PUBLIC_IP" \
+  "export KUBECONFIG=/tmp/admin.conf && \
+   kubectl create -f /tmp/calico-custom-resources.yaml"
+
+log 'Waiting for Calico installation'
+
+ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$VM1_PUBLIC_IP" \
+  "export KUBECONFIG=/tmp/admin.conf && \
+   for i in \$(seq 1 60); do \
+     echo \"Calico status check \$i/60\"; \
+     kubectl get tigerastatus 2>/dev/null || true; \
+     kubectl -n calico-system get pods -o wide 2>/dev/null || true; \
+     status=\$(kubectl get tigerastatus calico \
+       -o jsonpath='{.status.conditions[?(@.type==\"Available\")].status}' \
+       2>/dev/null || true); \
+     if [[ \"\$status\" == \"True\" ]]; then \
+       echo 'Calico is available'; \
+       exit 0; \
+     fi; \
+     sleep 10; \
+   done; \
+   echo 'Calico did not become available within 10 minutes'; \
+   kubectl describe tigerastatus calico || true; \
+   kubectl get pods -A -o wide || true; \
+   kubectl get events -A --sort-by=.lastTimestamp | tail -n 100 || true; \
+   exit 1"
+
+log 'Retrieving the worker join command'
+
+JOIN_COMMAND="$(
+  ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$VM1_PUBLIC_IP" \
+    'sudo cat /root/kubeadm-worker-join.sh'
+)"
+
+[[ -n "$JOIN_COMMAND" ]] || fail 'Worker join command is empty.'
+
+: "${POD_CIDR:?POD_CIDR is required}"
+: "${SERVICE_CIDR:?SERVICE_CIDR is required}"
+
+log "Joining VM2 as a worker with POD_CIDR=$POD_CIDR"
+
+scp "${SSH_OPTIONS[@]}" "$CLUSTER_PROVISION" \
+  "$ADMIN_USERNAME@$VM2_PUBLIC_IP:/tmp/kubernetes-cluster-provision.sh" >/dev/null
+
+ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$VM2_PUBLIC_IP" \
+  "chmod +x /tmp/kubernetes-cluster-provision.sh && \
+   sudo env \
+     POD_CIDR='$POD_CIDR' \
+     SERVICE_CIDR='$SERVICE_CIDR' \
+     JOIN_COMMAND='$JOIN_COMMAND' \
+     bash /tmp/kubernetes-cluster-provision.sh"
+
+log 'Waiting for both nodes to become Ready'
+ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$VM1_PUBLIC_IP" \
+  "export KUBECONFIG=/tmp/admin.conf && \
+   kubectl wait --for=condition=Ready node --all --timeout=300s"
+
+log 'Cluster status'
+ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$VM1_PUBLIC_IP" \
+  "export KUBECONFIG=/tmp/admin.conf && \
+   kubectl get nodes -o wide && \
+   kubectl get pods -A"
+   
+echo "$RESOURCE_GROUP" > .last-resource-group
+
+printf '\nCalico Kubernetes sandbox is ready.\n'
