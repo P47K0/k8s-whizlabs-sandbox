@@ -397,5 +397,7 @@ ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$VM1_PUBLIC_IP" \
   "export KUBECONFIG=/tmp/admin.conf && \
    kubectl get nodes -o wide && \
    kubectl get pods -A"
+   
+echo "$RESOURCE_GROUP" > .last-resource-group
 
 printf '\nCalico Kubernetes sandbox is ready.\n'
