@@ -160,20 +160,16 @@ wait_for_ssh() {
 
 install_node() {
   local host="$1"
-
+  local role="$2"
   log "[$host] Copying installation script"
-
   scp "${SSH_OPTIONS[@]}" "$NODE_INSTALL" \
     "$ADMIN_USERNAME@$host:/tmp/kubernetes-node-install.sh" \
     >/dev/null
-
-  log "[$host] Installing prerequisites"
-
+  log "[$host] Installing prerequisites (role: $role)"
   ssh "${SSH_OPTIONS[@]}" "$ADMIN_USERNAME@$host" \
     "chmod +x /tmp/kubernetes-node-install.sh && \
-     sudo KUBERNETES_MINOR_VERSION='$KUBERNETES_MINOR_VERSION' \
+     sudo KUBERNETES_MINOR_VERSION='$KUBERNETES_MINOR_VERSION' NODE_ROLE='$role' \
      /tmp/kubernetes-node-install.sh"
-
   log "[$host] Installation completed"
 }
 
@@ -219,11 +215,9 @@ wait_for_ssh "$VM2_PUBLIC_IP" || \
   fail "SSH unavailable on VM2: $VM2_PUBLIC_IP"
 
 log 'Installing Kubernetes prerequisites on VM1 and VM2'
-
-install_node "$VM1_PUBLIC_IP" &
+install_node "$VM1_PUBLIC_IP" "control" &
 vm1_pid=$!
-
-install_node "$VM2_PUBLIC_IP" &
+install_node "$VM2_PUBLIC_IP" "worker" &
 vm2_pid=$!
 
 download_calico_manifests &
